@@ -1,6 +1,5 @@
 var Buffer = require('safe-buffer').Buffer;
 var crypto = require('crypto');
-var formatEcdsa = require('ecdsa-sig-formatter');
 var util = require('util');
 
 var MSG_INVALID_ALGORITHM = '"%s" is not a valid algorithm.\n  Supported algorithms are:\n  "HS256", "HS384", "HS512", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512" and "none".'
@@ -60,32 +59,6 @@ function checkIsPrivateKey(key) {
   throw typeError(MSG_INVALID_SIGNER_KEY);
 };
 
-function checkIsSecretKey(key) {
-  if (Buffer.isBuffer(key)) {
-    return;
-  }
-
-  if (typeof key === 'string') {
-    return key;
-  }
-
-  if (!supportsKeyObjects) {
-    throw typeError(MSG_INVALID_SECRET);
-  }
-
-  if (typeof key !== 'object') {
-    throw typeError(MSG_INVALID_SECRET);
-  }
-
-  if (key.type !== 'secret') {
-    throw typeError(MSG_INVALID_SECRET);
-  }
-
-  if (typeof key.export !== 'function') {
-    throw typeError(MSG_INVALID_SECRET);
-  }
-}
-
 function fromBase64(base64) {
   return base64
     .replace(/=/g, '')
@@ -124,38 +97,6 @@ function normalizeInput(thing) {
   return thing;
 }
 
-function createHmacSigner(bits) {
-  return function sign(thing, secret) {
-    checkIsSecretKey(secret);
-    thing = normalizeInput(thing);
-    var hmac = crypto.createHmac('sha' + bits, secret);
-    var sig = (hmac.update(thing), hmac.digest('base64'))
-    return fromBase64(sig);
-  }
-}
-
-var bufferEqual;
-var timingSafeEqual = 'timingSafeEqual' in crypto ? function timingSafeEqual(a, b) {
-  if (a.byteLength !== b.byteLength) {
-    return false;
-  }
-
-  return crypto.timingSafeEqual(a, b)
-} : function timingSafeEqual(a, b) {
-  if (!bufferEqual) {
-    bufferEqual = require('buffer-equal-constant-time');
-  }
-
-  return bufferEqual(a, b)
-}
-
-function createHmacVerifier(bits) {
-  return function verify(thing, signature, secret) {
-    var computedSig = createHmacSigner(bits)(thing, secret);
-    return timingSafeEqual(Buffer.from(signature), Buffer.from(computedSig));
-  }
-}
-
 function createKeySigner(bits) {
  return function sign(thing, privateKey) {
     checkIsPrivateKey(privateKey);
@@ -179,53 +120,6 @@ function createKeyVerifier(bits) {
   }
 }
 
-function createPSSKeySigner(bits) {
-  return function sign(thing, privateKey) {
-    checkIsPrivateKey(privateKey);
-    thing = normalizeInput(thing);
-    var signer = crypto.createSign('RSA-SHA' + bits);
-    var sig = (signer.update(thing), signer.sign({
-      key: privateKey,
-      padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
-      saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST
-    }, 'base64'));
-    return fromBase64(sig);
-  }
-}
-
-function createPSSKeyVerifier(bits) {
-  return function verify(thing, signature, publicKey) {
-    checkIsPublicKey(publicKey);
-    thing = normalizeInput(thing);
-    signature = toBase64(signature);
-    var verifier = crypto.createVerify('RSA-SHA' + bits);
-    verifier.update(thing);
-    return verifier.verify({
-      key: publicKey,
-      padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
-      saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST
-    }, signature, 'base64');
-  }
-}
-
-function createECDSASigner(bits) {
-  var inner = createKeySigner(bits);
-  return function sign() {
-    var signature = inner.apply(null, arguments);
-    signature = formatEcdsa.derToJose(signature, 'ES' + bits);
-    return signature;
-  };
-}
-
-function createECDSAVerifer(bits) {
-  var inner = createKeyVerifier(bits);
-  return function verify(thing, signature, publicKey) {
-    signature = formatEcdsa.joseToDer(signature, 'ES' + bits).toString('base64');
-    var result = inner(thing, signature, publicKey);
-    return result;
-  };
-}
-
 function createNoneSigner() {
   return function sign() {
     return '';
@@ -240,20 +134,14 @@ function createNoneVerifier() {
 
 module.exports = function jwa(algorithm) {
   var signerFactories = {
-    hs: createHmacSigner,
     rs: createKeySigner,
-    ps: createPSSKeySigner,
-    es: createECDSASigner,
     none: createNoneSigner,
   }
   var verifierFactories = {
-    hs: createHmacVerifier,
     rs: createKeyVerifier,
-    ps: createPSSKeyVerifier,
-    es: createECDSAVerifer,
     none: createNoneVerifier,
   }
-  var match = algorithm.match(/^(RS|PS|ES|HS)(256|384|512)$|^(none)$/);
+  var match = algorithm.match(/^(RS)(256|384|512)$|^(none)$/);
   if (!match)
     throw typeError(MSG_INVALID_ALGORITHM, algorithm);
   var algo = (match[1] || match[3]).toLowerCase();
